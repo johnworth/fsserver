@@ -1,0 +1,6 @@
+jobrunner
+.env
+**/pkg
+**/.hg
+**/.DS_Store
+**/*.test
