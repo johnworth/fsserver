@@ -10,11 +10,26 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 	"sync"
 
 	"code.google.com/p/go.exp/fsnotify"
 )
+
+// PathExists returns true if a path exists on the filesystem and false
+// otherwise. If an error occurs (other than a NotExist) then the error will
+// be returned along with false.
+func PathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, nil
+}
 
 // SendableEvent encapsulates the data sent to callback URLs when a watched file
 // changes.
@@ -34,33 +49,40 @@ type CallbackStorer interface {
 // CallbackStore is an in-memory implementation of CallbackStorer.
 type CallbackStore struct {
 	storage map[string][]string
-	lock    *sync.RWMutex
+	lock    *sync.RWMutex //Synchronized reads/writes to storage
+	base    string        //base directory for the callback paths.
 }
 
 // Set associates a callback with a path. Neither path or callback are currently
 // validated. Not validating the path allows callers to set a callback for a
 // path that doesn't exist yet.
-func (c *CallbackStore) Set(path string, cb string) {
+func (c *CallbackStore) Set(cbpath string, cb string) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	cbs, ok := c.storage[path]
+	if !strings.HasPrefix(cbpath, c.base) {
+		cbpath = path.Join(c.base, cbpath)
+	}
+	cbs, ok := c.storage[cbpath]
 	if !ok {
-		c.storage[path] = make([]string, 0)
-		cbs = c.storage[path]
+		c.storage[cbpath] = make([]string, 0)
+		cbs = c.storage[cbpath]
 	}
 	cbs = append(cbs, cb)
-	c.storage[path] = cbs
+	c.storage[cbpath] = cbs
 }
 
 // Get returns a []string containing the callback URLs (as strings) for the
 // given path.
-func (c *CallbackStore) Get(path string) []string {
+func (c *CallbackStore) Get(cbpath string) []string {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	cbs, ok := c.storage[path]
+	if !strings.HasPrefix(cbpath, c.base) {
+		cbpath = path.Join(c.base, cbpath)
+	}
+	cbs, ok := c.storage[cbpath]
 	if !ok {
-		c.storage[path] = make([]string, 0)
-		cbs = c.storage[path]
+		c.storage[cbpath] = make([]string, 0)
+		cbs = c.storage[cbpath]
 	}
 	return cbs
 }
@@ -68,12 +90,18 @@ func (c *CallbackStore) Get(path string) []string {
 // Trigger will cause a JSON-encoded the SendableEvent to be sent to the
 // callback URLs associated with the given path. The requests are POSTs and they
 // are performed asynchronously.
-func (c *CallbackStore) Trigger(path string, se *SendableEvent) error {
-	cbs := c.Get(path)
+func (c *CallbackStore) Trigger(cbpath string, se *SendableEvent) error {
+	if !strings.HasPrefix(cbpath, c.base) {
+		cbpath = path.Join(c.base, cbpath)
+	}
+	cbs := c.Get(cbpath)
+	fmt.Println(cbpath)
+	fmt.Println(cbs)
 	msg, err := json.Marshal(se)
 	if err != nil {
 		return err
 	}
+	fmt.Println(string(msg[:]))
 	go func() {
 		for _, cb := range cbs {
 			resp, err := http.Post(cb, "application/json", bytes.NewBuffer(msg))
@@ -86,7 +114,7 @@ func (c *CallbackStore) Trigger(path string, se *SendableEvent) error {
 				}
 				log.Printf(
 					"Path: %s\nURL:%s\nStatus: %d\nBody:\n%s\n",
-					path,
+					cbpath,
 					cb,
 					resp.StatusCode,
 					string(body[:]),
@@ -176,18 +204,36 @@ func (c *CallbackHandler) ServeHTTP(resp http.ResponseWriter, request *http.Requ
 	}
 }
 
-// PathExists returns true if a path exists on the filesystem and false
-// otherwise. If an error occurs (other than a NotExist) then the error will
-// be returned along with false.
-func PathExists(path string) (bool, error) {
-	_, err := os.Stat(path)
-	if err == nil {
-		return true, nil
+// Monitor creates a fsnotify.Watcher for the given path and sends
+// SendableEvents out on the provided out channel.
+func Monitor(path string, out chan<- SendableEvent) error {
+	exists, err := PathExists(path)
+	if err != nil {
+		return err
 	}
-	if os.IsNotExist(err) {
-		return false, nil
+	if !exists {
+		return fmt.Errorf("%s does not exist", path)
 	}
-	return false, nil
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	go func() {
+		for {
+			select {
+			case event := <-watcher.Event:
+				sendable := SendableEvent{
+					Path:  strings.TrimPrefix(strings.TrimPrefix(event.Name, path), "/"),
+					Event: StringifyEvent(event),
+				}
+				out <- sendable
+			case err := <-watcher.Error:
+				log.Println(err)
+			}
+		}
+	}()
+	err = watcher.Watch(path)
+	return err
 }
 
 // StringifyEvent translates a *fsnotify.FileEvent into a string. Useful for
@@ -209,38 +255,6 @@ func StringifyEvent(event *fsnotify.FileEvent) string {
 		return "Rename"
 	}
 	return "Unknown"
-}
-
-// Monitor creates a fsnotify.Watcher for the given path and sends
-// SendableEvents out on the provided out channel.
-func Monitor(path string, out chan<- SendableEvent) error {
-	exists, err := PathExists(path)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("%s does not exist", path)
-	}
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return err
-	}
-	go func() {
-		for {
-			select {
-			case event := <-watcher.Event:
-				sendable := SendableEvent{
-					Path:  event.Name,
-					Event: StringifyEvent(event),
-				}
-				out <- sendable
-			case err := <-watcher.Error:
-				log.Println(err)
-			}
-		}
-	}()
-	err = watcher.Watch(path)
-	return err
 }
 
 func main() {
