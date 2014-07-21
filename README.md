@@ -32,7 +32,7 @@ The body of the request should look something like this:
 
 ```json
 {
-  "Path" : "/tmp/example",
+  "Path" : "example",
   "URL" : "http://localhost:8081/"
 }
 ```
@@ -41,7 +41,7 @@ The JSON POSTed to the callback URL will look similar to the following:
 
 ```json
 {
-  "Path":"_vendor/foo",
+  "Path":"example",
   "Event":"Attrib"
 }
 ```
@@ -56,7 +56,7 @@ More information will be added to the callback JSON in the future.
 
 Here's a curl command as an example:
 
-    curl -d '{"Path":"/tmp/example","URL":"http://localhost:8081"}' http://localhost:8080/callbacks/
+    curl -d '{"Path":"example","URL":"http://localhost:8081"}' http://localhost:8080/callbacks/
 
 ### File browsing/downloading
 
