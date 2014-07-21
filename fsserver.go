@@ -95,13 +95,10 @@ func (c *CallbackStore) Trigger(cbpath string, se *SendableEvent) error {
 		cbpath = path.Join(c.base, cbpath)
 	}
 	cbs := c.Get(cbpath)
-	fmt.Println(cbpath)
-	fmt.Println(cbs)
 	msg, err := json.Marshal(se)
 	if err != nil {
 		return err
 	}
-	fmt.Println(string(msg[:]))
 	go func() {
 		for _, cb := range cbs {
 			resp, err := http.Post(cb, "application/json", bytes.NewBuffer(msg))
